@@ -1,30 +1,90 @@
 # Community Showcase
 
-*Automatically synced with your [v0.app](https://v0.app) deployments*
+A minimal, production-ready template for building a community showcase/gallery with user submissions, admin moderation, and upvoting.
 
-[![Deployed on Vercel](https://img.shields.io/badge/Deployed%20on-Vercel-black?style=for-the-badge&logo=vercel)](https://vercel.com/onaccs-projects/v0-user-showcase-app)
-[![Built with v0](https://img.shields.io/badge/Built%20with-v0.app-black?style=for-the-badge)](https://v0.app/chat/kmrqRGcdxd1)
+## Features
 
-## Overview
+- **Gallery View** - Browse approved submissions with search
+- **Submit Projects** - Users can submit with images, descriptions, and URLs
+- **Authentication** - Built-in login/register with JWT tokens
+- **Admin Moderation** - Approve/reject pending submissions
+- **Upvoting** - Like/unlike submissions
+- **Image Uploads** - Multi-image uploads via Vercel Blob
+- **Production Ready** - Zod validation, caching, optimized queries
 
-This repository will stay in sync with your deployed chats on [v0.app](https://v0.app).
-Any changes you make to your deployed app will be automatically pushed to this repository from [v0.app](https://v0.app).
+## Tech Stack
 
-## Deployment
+- **Framework**: Next.js 16 (App Router)
+- **Styling**: Tailwind CSS + shadcn/ui
+- **Backend**: [Foru.ms SDK](https://www.npmjs.com/package/@foru-ms/sdk)
+- **Storage**: Vercel Blob
+- **Validation**: Zod
 
-Your project is live at:
+## Quick Start
 
-**[https://vercel.com/onaccs-projects/v0-user-showcase-app](https://vercel.com/onaccs-projects/v0-user-showcase-app)**
+```bash
+# Install dependencies
+npm install
 
-## Build your app
+# Set environment variables
+cp .env.example .env.local
+# Edit .env.local with your API keys
 
-Continue building your app on:
+# Run development server
+npm run dev
+```
 
-**[https://v0.app/chat/kmrqRGcdxd1](https://v0.app/chat/kmrqRGcdxd1)**
+## Environment Variables
 
-## How It Works
+```env
+FORUM_API_KEY=your_forum_api_key
+BLOB_READ_WRITE_TOKEN=your_vercel_blob_token
+```
 
-1. Create and modify your project using [v0.app](https://v0.app)
-2. Deploy your chats from the v0 interface
-3. Changes are automatically pushed to this repository
-4. Vercel deploys the latest version from this repository
+## Project Structure
+
+```
+app/
+├── showcase/
+│   ├── actions.ts        # Server actions (auth, submissions, voting)
+│   ├── page.tsx          # Main page
+│   └── showcase-client.tsx
+├── api/upload/           # Image upload endpoint
+
+components/showcase/
+├── auth-modal.tsx        # Login/register modal
+├── submission-card.tsx   # Submission card with detail modal
+├── submission-form.tsx   # New submission form
+├── submission-list.tsx   # Reusable gallery component
+└── image-uploader.tsx    # Multi-image uploader
+```
+
+## Customization
+
+### Styling
+Modify `app/globals.css` and component styles using Tailwind.
+
+### Validation Rules
+Edit Zod schemas in `app/showcase/actions.ts`:
+```typescript
+const createSubmissionSchema = z.object({
+  title: z.string().min(1).max(200),
+  description: z.string().min(10).max(5000),
+  images: z.array(...).min(1).max(10),
+  // ...
+})
+```
+
+### Caching
+Adjust cache TTL in `actions.ts`:
+```typescript
+const getCachedApproved = unstable_cache(
+  fetchApprovedInternal,
+  ["approved-submissions"],
+  { revalidate: 60 } // seconds
+)
+```
+
+## License
+
+MIT
