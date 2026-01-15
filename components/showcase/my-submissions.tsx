@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback } from "react"
 import { SubmissionCard } from "./submission-card"
 import { getMySubmissions } from "@/app/showcase/actions"
-import type { ShowcaseSubmission } from "@/lib/forum-client"
+import type { ShowcaseSubmission } from "@/app/showcase/actions"
 import { Loader2, FolderOpen } from "lucide-react"
 
 export function MySubmissions() {

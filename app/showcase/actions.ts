@@ -1,12 +1,91 @@
 "use server"
 
-import {
-  getForumClient,
-  getAuthenticatedForumClient,
-  type SubmissionStatus,
-  type ShowcaseSubmission,
-} from "@/lib/forum-client"
+import { ForumClient } from "@foru-ms/sdk"
 import { cookies } from "next/headers"
+
+// Type definitions for v2 SDK thread data shape
+interface ThreadData {
+  id: string
+  title: string
+  body: string
+  slug: string | null
+  locked: boolean | null
+  pinned: boolean | null
+  views: number
+  postsCount: number
+  lastPostAt: string | null
+  extendedData: Record<string, unknown> | null
+  createdAt: string
+  updatedAt: string
+  userId?: string
+  tags?: string[]
+  _count?: {
+    reactions: number
+  }
+}
+
+
+
+interface UserData {
+  id: string
+  username: string
+  email?: string
+  displayName?: string | null
+  roles?: string[]
+}
+
+interface ReportData {
+  id: string
+  type: string
+  description?: string
+  status?: string
+  threadId?: string
+  postId?: string
+  reportedId?: string
+  createdAt?: string
+}
+
+// Submission status stored in thread's extendedData
+export type SubmissionStatus = "pending" | "approved" | "rejected"
+
+// Image upload structure
+export interface ImageUpload {
+  url: string
+  name: string
+}
+
+export interface ShowcaseSubmission {
+  id: string
+  title: string
+  description: string
+  images: ImageUpload[]      // Array of all uploaded images
+  mainImageIndex: number     // Index of the main image (default: 0)
+  projectUrl?: string
+  authorId: string
+  authorName: string
+  status: SubmissionStatus
+  createdAt: string
+  reportId?: string
+  upvotes: number
+  hasUpvoted?: boolean
+}
+
+// Get base forum client (API key only)
+function getForumClient() {
+  return new ForumClient({
+    apiKey: process.env.FORUM_API_KEY!,
+  })
+}
+
+// Get authenticated forum client with JWT token in headers
+function getAuthenticatedForumClient(token: string) {
+  return new ForumClient({
+    apiKey: process.env.FORUM_API_KEY!,
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  })
+}
 
 // Get user token from cookies
 async function getUserToken(): Promise<string | null> {
@@ -15,14 +94,14 @@ async function getUserToken(): Promise<string | null> {
 }
 
 // Get current user info
-export async function getCurrentUser() {
+export async function getCurrentUser(): Promise<UserData | null> {
   const token = await getUserToken()
   if (!token) return null
 
   try {
     const client = getAuthenticatedForumClient(token)
-    const user = await client.auth.me()
-    return user
+    const response = await client.auth.me()
+    return response.data as UserData
   } catch {
     return null
   }
@@ -42,7 +121,7 @@ export async function loginUser(login: string, password: string) {
     const response = await client.auth.login({ login, password })
 
     const cookieStore = await cookies()
-    cookieStore.set("forum_token", response.token, {
+    cookieStore.set("forum_token", response.data.token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
       sameSite: "lax",
@@ -50,7 +129,8 @@ export async function loginUser(login: string, password: string) {
     })
 
     return { success: true }
-  } catch (error) {
+  } catch (error: any) {
+    console.error("[loginUser] Failed:", JSON.stringify(error, null, 2))
     return { success: false, error: "Invalid credentials" }
   }
 }
@@ -79,7 +159,7 @@ export async function registerUser(data: {
     })
 
     const cookieStore = await cookies()
-    cookieStore.set("forum_token", response.token, {
+    cookieStore.set("forum_token", response.data.token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
       sameSite: "lax",
@@ -97,7 +177,8 @@ export async function registerUser(data: {
 export async function createSubmission(data: {
   title: string
   description: string
-  imageUrl?: string
+  images: ImageUpload[]
+  mainImageIndex: number
   projectUrl?: string
 }) {
   const token = await getUserToken()
@@ -107,30 +188,37 @@ export async function createSubmission(data: {
 
   try {
     const client = getAuthenticatedForumClient(token)
-    const user = await client.auth.me()
+    const userResponse = await client.auth.me()
+    const user = userResponse.data as UserData
 
-    // Create thread with pending status
-    const thread = await client.threads.create({
+    // Create thread with extendedData
+    const threadResponse = await client.threads.create({
       title: data.title,
       body: data.description,
       extendedData: {
         type: "showcase_submission",
-        imageUrl: data.imageUrl || "",
+        images: data.images,
+        mainImageIndex: data.mainImageIndex,
         projectUrl: data.projectUrl || "",
         status: "pending" as SubmissionStatus,
         authorName: user.displayName || user.username,
+        upvotes: 0,
       },
     })
+    const thread = threadResponse.data as ThreadData | undefined
 
-    // Create a report for admin review (reporter = submitter)
-    const adminClient = getForumClient()
-    await adminClient.reports.create({
+    if (!thread) {
+      throw new Error("Failed to create thread")
+    }
+
+    // Create a report for admin review (userId = reporter)
+    // Use the authenticated client so the report is created by the user
+    await client.reports.create({
       threadId: thread.id,
-      reporterId: user.id,
+      userId: user.id,
       reportedId: user.id,
       type: "showcase_submission",
       description: `New showcase submission: ${data.title}`,
-      status: "pending",
     })
 
     return { success: true, threadId: thread.id }
@@ -140,31 +228,55 @@ export async function createSubmission(data: {
   }
 }
 
+// Helper to paginate through all items
+async function paginateAll<T>(
+  fetchFn: (cursor?: string) => Promise<{ items: T[]; nextCursor?: string }>
+): Promise<T[]> {
+  const allItems: T[] = []
+  let cursor: string | undefined = undefined
+
+  do {
+    const result = await fetchFn(cursor)
+    allItems.push(...result.items)
+    cursor = result.nextCursor
+  } while (cursor)
+
+  return allItems
+}
+
 // Get all approved submissions (public)
 export async function getApprovedSubmissions(): Promise<ShowcaseSubmission[]> {
   try {
     const client = getForumClient()
-    const threads: ShowcaseSubmission[] = []
 
-    for await (const thread of client.pagination.paginateAll((cursor) =>
-      client.threads.list({ cursor, filter: "newest", limit: 50 }),
-    )) {
-      if (thread.extendedData?.type === "showcase_submission" && thread.extendedData?.status === "approved") {
-        threads.push({
-          id: thread.id,
-          title: thread.title,
-          description: thread.body || "",
-          imageUrl: thread.extendedData.imageUrl,
-          projectUrl: thread.extendedData.projectUrl,
-          authorId: thread.creatorId || "",
-          authorName: thread.extendedData.authorName || "Anonymous",
-          status: thread.extendedData.status,
-          createdAt: thread.createdAt || new Date().toISOString(),
-        })
+    const threads = await paginateAll<ThreadData>(async (cursor) => {
+      const response = await client.threads.list({ cursor, limit: 50 })
+      return {
+        items: response.data.items as ThreadData[],
+        nextCursor: response.data.nextCursor,
       }
-    }
+    })
 
     return threads
+      .filter(
+        (thread) =>
+          thread.extendedData?.type === "showcase_submission" &&
+          thread.extendedData?.status === "approved"
+      )
+      .map((thread) => ({
+        id: thread.id,
+        title: thread.title,
+        description: thread.body || "",
+        images: (thread.extendedData?.images as ImageUpload[]) || [],
+        mainImageIndex: (thread.extendedData?.mainImageIndex as number) || 0,
+        projectUrl: thread.extendedData?.projectUrl as string | undefined,
+        authorId: thread.userId || "",
+        authorName: (thread.extendedData?.authorName as string) || "Anonymous",
+        status: thread.extendedData?.status as SubmissionStatus,
+        createdAt: thread.createdAt || new Date().toISOString(),
+
+        upvotes: thread._count?.reactions || 0,
+      }))
   } catch (error) {
     console.error("Failed to fetch submissions:", error)
     return []
@@ -178,28 +290,33 @@ export async function getMySubmissions(): Promise<ShowcaseSubmission[]> {
 
   try {
     const client = getAuthenticatedForumClient(token)
-    const user = await client.auth.me()
-    const threads: ShowcaseSubmission[] = []
+    const userResponse = await client.auth.me()
+    const user = userResponse.data as UserData
 
-    for await (const thread of client.pagination.paginateAll((cursor) =>
-      client.users.getThreads(user.id, { cursor, filter: "newest", limit: 50 }),
-    )) {
-      if (thread.extendedData?.type === "showcase_submission") {
-        threads.push({
-          id: thread.id,
-          title: thread.title,
-          description: thread.body || "",
-          imageUrl: thread.extendedData.imageUrl,
-          projectUrl: thread.extendedData.projectUrl,
-          authorId: thread.creatorId || "",
-          authorName: thread.extendedData.authorName || "Anonymous",
-          status: thread.extendedData.status || "pending",
-          createdAt: thread.createdAt || new Date().toISOString(),
-        })
+    const threads = await paginateAll<ThreadData>(async (cursor) => {
+      const response = await client.threads.list({ cursor, limit: 50, userId: user.id })
+      return {
+        items: response.data.items as ThreadData[],
+        nextCursor: response.data.nextCursor,
       }
-    }
+    })
 
     return threads
+      .filter((thread) => thread.extendedData?.type === "showcase_submission")
+      .map((thread) => ({
+        id: thread.id,
+        title: thread.title,
+        description: thread.body || "",
+        images: (thread.extendedData?.images as ImageUpload[]) || [],
+        mainImageIndex: (thread.extendedData?.mainImageIndex as number) || 0,
+        projectUrl: thread.extendedData?.projectUrl as string | undefined,
+        authorId: thread.userId || "",
+        authorName: (thread.extendedData?.authorName as string) || "Anonymous",
+        status: (thread.extendedData?.status as SubmissionStatus) || "pending",
+        createdAt: thread.createdAt || new Date().toISOString(),
+
+        upvotes: thread._count?.reactions || 0,
+      }))
   } catch (error) {
     console.error("Failed to fetch my submissions:", error)
     return []
@@ -213,26 +330,35 @@ export async function getPendingSubmissions(): Promise<ShowcaseSubmission[]> {
 
   try {
     const client = getForumClient()
-    const threads: ShowcaseSubmission[] = []
+    const submissions: ShowcaseSubmission[] = []
 
-    for await (const report of client.pagination.paginateAll((cursor) =>
-      client.reports.list({ cursor, status: "pending", filter: "newest", limit: 50 }),
-    )) {
+    const reports = await paginateAll<ReportData>(async (cursor) => {
+      const response = await client.reports.list({ cursor, status: "pending", limit: 50 })
+      return {
+        items: response.data.items as ReportData[],
+        nextCursor: response.data.nextCursor,
+      }
+    })
+
+    for (const report of reports) {
       if (report.type === "showcase_submission" && report.threadId) {
         try {
-          const thread = await client.threads.retrieve(report.threadId)
-          if (thread.extendedData?.type === "showcase_submission") {
-            threads.push({
+          const threadResponse = await client.threads.retrieve({ id: report.threadId })
+          const thread = threadResponse.data as ThreadData | undefined
+          if (thread?.extendedData?.type === "showcase_submission") {
+            submissions.push({
               id: thread.id,
               title: thread.title,
               description: thread.body || "",
-              imageUrl: thread.extendedData.imageUrl,
-              projectUrl: thread.extendedData.projectUrl,
-              authorId: thread.creatorId || "",
-              authorName: thread.extendedData.authorName || "Anonymous",
+              images: (thread.extendedData.images as ImageUpload[]) || [],
+              mainImageIndex: (thread.extendedData.mainImageIndex as number) || 0,
+              projectUrl: thread.extendedData.projectUrl as string | undefined,
+              authorId: thread.userId || "",
+              authorName: (thread.extendedData.authorName as string) || "Anonymous",
               status: "pending",
-              createdAt: thread.createdAt || new Date().toISOString(),
               reportId: report.id,
+              createdAt: thread.createdAt || new Date().toISOString(),
+              upvotes: thread._count?.reactions || 0,
             })
           }
         } catch {
@@ -241,7 +367,7 @@ export async function getPendingSubmissions(): Promise<ShowcaseSubmission[]> {
       }
     }
 
-    return threads
+    return submissions
   } catch (error) {
     console.error("Failed to fetch pending submissions:", error)
     return []
@@ -258,16 +384,21 @@ export async function approveSubmission(threadId: string, reportId: string) {
   try {
     const client = getForumClient()
 
+    // Get current thread data to preserve other fields
+    const threadResponse = await client.threads.retrieve({ id: threadId })
+    const currentExtendedData = threadResponse.data?.extendedData || {}
+
     // Update thread status to approved
-    await client.threads.update(threadId, {
+    await client.threads.update({
+      id: threadId,
       extendedData: {
+        ...currentExtendedData,
         status: "approved",
       },
     })
 
-    await client.reports.update(reportId, {
-      status: "approved",
-    })
+    // Update report status
+    await client.reports.update({ id: reportId, status: "approved" })
 
     return { success: true }
   } catch (error) {
@@ -286,20 +417,63 @@ export async function rejectSubmission(threadId: string, reportId: string) {
   try {
     const client = getForumClient()
 
+    // Get current thread data to preserve other fields
+    const threadResponse = await client.threads.retrieve({ id: threadId })
+    const currentExtendedData = threadResponse.data?.extendedData || {}
+
     // Update thread status to rejected
-    await client.threads.update(threadId, {
+    await client.threads.update({
+      id: threadId,
       extendedData: {
+        ...currentExtendedData,
         status: "rejected",
       },
     })
 
-    await client.reports.update(reportId, {
-      status: "rejected",
-    })
+    // Update report status
+    await client.reports.update({ id: reportId, status: "rejected" })
 
     return { success: true }
   } catch (error) {
     console.error("Failed to reject submission:", error)
     return { success: false, error: "Failed to reject submission" }
+  }
+}
+
+// Toggle upvote (using native reactions)
+export async function toggleUpvote(threadId: string) {
+  const token = await getUserToken()
+  if (!token) return { success: false, error: "Not authenticated" }
+
+  try {
+    const client = getAuthenticatedForumClient(token)
+    const userResponse = await client.auth.me()
+    const user = userResponse.data as UserData
+
+    // Check if user already liked the thread
+    // List reactions and check if any belong to the current user (filter client-side)
+    const reactionsResponse = await client.threads.listReactions({ id: threadId })
+    const reactions = reactionsResponse.data.items
+
+    const existingLike = reactions.find(r => r.userId === user.id && r.type === "LIKE")
+
+    if (existingLike) {
+      // Unlike: Delete the reaction using its ID
+      await client.threads.deleteReaction({
+        id: threadId,
+        subId: existingLike.id
+      })
+      return { success: true, action: "unliked" }
+    } else {
+      // Like: Create a new reaction
+      await client.threads.createReaction({
+        id: threadId,
+        type: "LIKE"
+      })
+      return { success: true, action: "liked" }
+    }
+  } catch (error) {
+    console.error("Failed to vote:", error)
+    return { success: false, error: "Failed to vote" }
   }
 }

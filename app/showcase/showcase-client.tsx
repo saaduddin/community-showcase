@@ -3,6 +3,7 @@
 import { useState } from "react"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Button } from "@/components/ui/button"
+import { Card, CardHeader, CardContent } from "@/components/ui/card"
 import { PublicGallery } from "@/components/showcase/public-gallery"
 import { SubmissionForm } from "@/components/showcase/submission-form"
 import { AuthModal } from "@/components/showcase/auth-modal"
@@ -25,129 +26,137 @@ export function ShowcaseClient({ user, isAdmin }: ShowcaseClientProps) {
   }
 
   return (
-    <main className="min-h-screen bg-background">
-      {/* Header */}
-      <header className="border-b border-border/50 bg-card">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-4 sm:px-6 lg:px-8">
+    <main className="min-h-screen bg-muted/30 flex items-center justify-center p-4">
+      {/* Widget Container */}
+      <Card className="w-full max-w-4xl h-[85vh] flex flex-col overflow-hidden shadow-xl border-border/50 bg-card">
+        {/* Header */}
+        <div className="border-b border-border/50 bg-muted/10 px-6 py-4 flex items-center justify-between shrink-0">
           <div className="flex items-center gap-3">
-            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-foreground">
-              <Sparkles className="h-5 w-5 text-background" />
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground shadow-sm">
+              <Sparkles className="h-4 w-4" />
             </div>
             <div>
-              <h1 className="text-lg font-semibold text-foreground">Community Showcase</h1>
-              <p className="hidden text-sm text-muted-foreground sm:block">Discover amazing projects</p>
+              <h1 className="text-lg font-semibold tracking-tight text-foreground">Community Showcase</h1>
             </div>
           </div>
+
           {user ? (
             <div className="flex items-center gap-3">
-              <span className="hidden text-sm text-muted-foreground sm:inline">
-                {user.displayName || user.username}
+              <div className="flex flex-col items-end">
+                <span className="text-sm font-medium leading-none text-foreground">
+                  {user.displayName || user.username}
+                </span>
                 {isAdmin && (
-                  <span className="ml-2 rounded bg-primary/10 px-1.5 py-0.5 text-xs font-medium text-primary">
+                  <span className="text-[10px] uppercase font-bold text-primary">
                     Admin
                   </span>
                 )}
-              </span>
-              <Button variant="ghost" size="sm" onClick={handleLogout}>
-                <LogOut className="mr-2 h-4 w-4" />
-                Sign Out
+              </div>
+              <Button variant="ghost" size="icon" onClick={handleLogout} className="h-8 w-8 text-muted-foreground hover:text-foreground">
+                <LogOut className="h-4 w-4" />
+                <span className="sr-only">Sign Out</span>
               </Button>
             </div>
           ) : (
             <AuthModal>
-              <Button variant="outline" size="sm">
-                <LogIn className="mr-2 h-4 w-4" />
+              <Button size="sm" className="gap-2 shadow-sm">
+                <LogIn className="h-3.5 w-3.5" />
                 Sign In
               </Button>
             </AuthModal>
           )}
         </div>
-      </header>
 
-      {/* Main Content */}
-      <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
-        <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
-          <TabsList className="inline-flex h-auto flex-wrap gap-1 bg-muted/50 p-1">
-            <TabsTrigger value="gallery" className="gap-2 px-4 py-2">
-              <LayoutGrid className="h-4 w-4" />
-              Gallery
-            </TabsTrigger>
-            {user && (
-              <>
-                <TabsTrigger value="submit" className="gap-2 px-4 py-2">
-                  <PlusCircle className="h-4 w-4" />
-                  Submit
-                </TabsTrigger>
-                <TabsTrigger value="my-submissions" className="gap-2 px-4 py-2">
-                  <FolderOpen className="h-4 w-4" />
-                  My Submissions
-                </TabsTrigger>
-              </>
-            )}
-            {isAdmin && (
-              <TabsTrigger value="admin" className="gap-2 px-4 py-2">
-                <Shield className="h-4 w-4" />
-                Admin
+        {/* Navigation & Content */}
+        <Tabs value={activeTab} onValueChange={setActiveTab} className="flex-1 flex flex-col overflow-hidden">
+          <div className="px-6 py-3 border-b border-border/50 bg-background/50 backdrop-blur-sm sticky top-0 z-10 shrink-0">
+            <TabsList className="bg-muted/50 p-1 w-full justify-start overflow-x-auto no-scrollbar">
+              <TabsTrigger value="gallery" className="gap-2 px-3">
+                <LayoutGrid className="h-3.5 w-3.5" />
+                Gallery
               </TabsTrigger>
-            )}
-          </TabsList>
+              {user && (
+                <>
+                  <TabsTrigger value="submit" className="gap-2 px-3">
+                    <PlusCircle className="h-3.5 w-3.5" />
+                    Submit
+                  </TabsTrigger>
+                  <TabsTrigger value="my-submissions" className="gap-2 px-3">
+                    <FolderOpen className="h-3.5 w-3.5" />
+                    My Stuff
+                  </TabsTrigger>
+                </>
+              )}
+              {isAdmin && (
+                <TabsTrigger value="admin" className="gap-2 px-3">
+                  <Shield className="h-3.5 w-3.5" />
+                  Admin
+                </TabsTrigger>
+              )}
+            </TabsList>
+          </div>
 
-          <TabsContent value="gallery" className="space-y-6">
-            <div>
-              <h2 className="text-2xl font-semibold tracking-tight text-foreground">Featured Work</h2>
-              <p className="text-muted-foreground">Explore projects submitted by our community members</p>
+          <div className="flex-1 overflow-y-auto">
+            <div className="p-6">
+              <TabsContent value="gallery" className="mt-0 space-y-6 animate-in fade-in-50 slide-in-from-bottom-2 duration-300">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h2 className="text-xl font-semibold tracking-tight">Featured Work</h2>
+                    <p className="text-sm text-muted-foreground">Discover what others are building</p>
+                  </div>
+                </div>
+                <PublicGallery />
+              </TabsContent>
+
+              {user ? (
+                <>
+                  <TabsContent value="submit" className="mt-0 animate-in fade-in-50 slide-in-from-bottom-2 duration-300">
+                    <div className="mx-auto max-w-xl space-y-6">
+                      <div className="text-center">
+                        <h2 className="text-xl font-semibold tracking-tight">Share Your Project</h2>
+                        <p className="text-sm text-muted-foreground">Submit for review to be featured in the gallery</p>
+                      </div>
+                      <SubmissionForm onSuccess={() => setActiveTab("my-submissions")} />
+                    </div>
+                  </TabsContent>
+
+                  <TabsContent value="my-submissions" className="mt-0 space-y-6 animate-in fade-in-50 slide-in-from-bottom-2 duration-300">
+                    <div>
+                      <h2 className="text-xl font-semibold tracking-tight">My Submissions</h2>
+                      <p className="text-sm text-muted-foreground">Manage and track your projects</p>
+                    </div>
+                    <MySubmissions />
+                  </TabsContent>
+                </>
+              ) : (
+                activeTab === "gallery" && (
+                  <div className="mt-12 rounded-xl border border-dashed border-border p-8 text-center bg-muted/20">
+                    <h3 className="text-lg font-medium">Have something to share?</h3>
+                    <p className="mb-4 text-sm text-muted-foreground">
+                      Join the community to showcase your work.
+                    </p>
+                    <AuthModal>
+                      <Button variant="outline" size="sm">
+                        Sign In or Register
+                      </Button>
+                    </AuthModal>
+                  </div>
+                )
+              )}
+
+              {isAdmin && (
+                <TabsContent value="admin" className="mt-0 space-y-6 animate-in fade-in-50 slide-in-from-bottom-2 duration-300">
+                  <div>
+                    <h2 className="text-xl font-semibold tracking-tight">Admin Review</h2>
+                    <p className="text-sm text-muted-foreground">Review pending submissions</p>
+                  </div>
+                  <AdminPanel />
+                </TabsContent>
+              )}
             </div>
-            <PublicGallery />
-          </TabsContent>
-
-          {user ? (
-            <>
-              <TabsContent value="submit" className="space-y-6">
-                <div>
-                  <h2 className="text-2xl font-semibold tracking-tight text-foreground">Share Your Work</h2>
-                  <p className="text-muted-foreground">Submit your project for review by our team</p>
-                </div>
-                <div className="mx-auto max-w-2xl">
-                  <SubmissionForm onSuccess={() => setActiveTab("my-submissions")} />
-                </div>
-              </TabsContent>
-
-              <TabsContent value="my-submissions" className="space-y-6">
-                <div>
-                  <h2 className="text-2xl font-semibold tracking-tight text-foreground">My Submissions</h2>
-                  <p className="text-muted-foreground">Track the status of your submitted projects</p>
-                </div>
-                <MySubmissions />
-              </TabsContent>
-            </>
-          ) : (
-            activeTab === "gallery" && (
-              <div className="mt-8 rounded-lg border border-border/50 bg-card p-8 text-center">
-                <h3 className="text-xl font-semibold text-foreground">Want to showcase your work?</h3>
-                <p className="mb-6 mt-2 text-muted-foreground">
-                  Sign in to submit your projects and join our community
-                </p>
-                <AuthModal>
-                  <Button size="lg">
-                    <LogIn className="mr-2 h-4 w-4" />
-                    Sign in to submit your own work
-                  </Button>
-                </AuthModal>
-              </div>
-            )
-          )}
-
-          {isAdmin && (
-            <TabsContent value="admin" className="space-y-6">
-              <div>
-                <h2 className="text-2xl font-semibold tracking-tight text-foreground">Admin Review</h2>
-                <p className="text-muted-foreground">Review and moderate community submissions</p>
-              </div>
-              <AdminPanel />
-            </TabsContent>
-          )}
+          </div>
         </Tabs>
-      </div>
+      </Card>
     </main>
   )
 }

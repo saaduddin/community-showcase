@@ -6,34 +6,41 @@ let forumClient: ForumClient | null = null
 export function getForumClient() {
   if (!forumClient) {
     forumClient = new ForumClient({
-      apiKey: process.env.FORUMS_API_KEY!,
-      baseUrl: process.env.FORUMS_BASE_URL || "https://api.foru.ms/v1",
+      apiKey: process.env.FORUM_API_KEY!,
     })
   }
   return forumClient
 }
 
 export function getAuthenticatedForumClient(token: string) {
-  const client = new ForumClient({
-    apiKey: process.env.FORUMS_API_KEY!,
-    baseUrl: process.env.FORUMS_BASE_URL || "https://api.foru.ms/v1",
+  return new ForumClient({
+    apiKey: process.env.FORUM_API_KEY!,
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
   })
-  client.setToken(token)
-  return client
 }
 
 // Submission status stored in thread's extendedData
 export type SubmissionStatus = "pending" | "approved" | "rejected"
 
+// Image upload structure
+export interface ImageUpload {
+  url: string
+  name: string
+}
+
 export interface ShowcaseSubmission {
   id: string
   title: string
   description: string
-  imageUrl?: string
+  images: ImageUpload[]      // Array of all uploaded images  
+  mainImageIndex: number     // Index of the main image (default: 0)
   projectUrl?: string
   authorId: string
   authorName: string
   status: SubmissionStatus
   createdAt: string
   reportId?: string
+  upvotes: number
 }

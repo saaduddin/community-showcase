@@ -10,6 +10,8 @@ import { Label } from "@/components/ui/label"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { createSubmission } from "@/app/showcase/actions"
 import { Loader2, Send } from "lucide-react"
+import { ImageUploader } from "./image-uploader"
+import type { ImageUpload } from "@/lib/forum-client"
 
 interface SubmissionFormProps {
   onSuccess?: () => void
@@ -19,6 +21,8 @@ export function SubmissionForm({ onSuccess }: SubmissionFormProps) {
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState(false)
+  const [images, setImages] = useState<ImageUpload[]>([])
+  const [mainImageIndex, setMainImageIndex] = useState(0)
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault()
@@ -30,7 +34,8 @@ export function SubmissionForm({ onSuccess }: SubmissionFormProps) {
     const result = await createSubmission({
       title: formData.get("title") as string,
       description: formData.get("description") as string,
-      imageUrl: (formData.get("imageUrl") as string) || undefined,
+      images: images,
+      mainImageIndex: mainImageIndex,
       projectUrl: (formData.get("projectUrl") as string) || undefined,
     })
 
@@ -38,7 +43,9 @@ export function SubmissionForm({ onSuccess }: SubmissionFormProps) {
 
     if (result.success) {
       setSuccess(true)
-      ;(e.target as HTMLFormElement).reset()
+      setImages([])
+      setMainImageIndex(0)
+        ; (e.target as HTMLFormElement).reset()
       onSuccess?.()
     } else {
       setError(result.error || "Something went wrong")
@@ -71,13 +78,14 @@ export function SubmissionForm({ onSuccess }: SubmissionFormProps) {
             />
           </div>
           <div className="space-y-2">
-            <Label htmlFor="imageUrl">Image URL</Label>
-            <Input
-              id="imageUrl"
-              name="imageUrl"
-              type="url"
-              placeholder="https://example.com/image.png"
-              className="bg-background"
+            <Label>Screenshots</Label>
+            <ImageUploader
+              images={images}
+              mainImageIndex={mainImageIndex}
+              onImagesChange={setImages}
+              onMainImageChange={setMainImageIndex}
+              maxImages={5}
+              disabled={isSubmitting}
             />
           </div>
           <div className="space-y-2">
