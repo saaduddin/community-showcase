@@ -11,7 +11,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { createSubmission } from "@/app/showcase/actions"
 import { Loader2, Send } from "lucide-react"
 import { ImageUploader } from "./image-uploader"
-import type { ImageUpload } from "@/lib/forum-client"
+import type { ImageUpload } from "@/app/showcase/actions"
 
 interface SubmissionFormProps {
   onSuccess?: () => void

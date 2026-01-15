@@ -4,7 +4,7 @@ import { useState, useCallback, useRef } from "react"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import { Upload, X, Star, Loader2, ImageIcon } from "lucide-react"
-import type { ImageUpload } from "@/lib/forum-client"
+import type { ImageUpload } from "@/app/showcase/actions"
 
 interface ImageUploaderProps {
     images: ImageUpload[]
