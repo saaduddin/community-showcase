@@ -26,12 +26,18 @@ interface ThreadData {
 
 
 
+interface UserRole {
+  id: string
+  name: string
+  slug: string
+}
+
 interface UserData {
   id: string
   username: string
   email?: string
   displayName?: string | null
-  roles?: string[]
+  roles?: UserRole[]
 }
 
 interface ReportData {
@@ -111,7 +117,7 @@ export async function getCurrentUser(): Promise<UserData | null> {
 export async function isUserAdmin(): Promise<boolean> {
   const user = await getCurrentUser()
   if (!user) return false
-  return user.roles?.includes("admin") || false
+  return user.roles?.some(r => r.slug === "admin" || r.name === "admin") || false
 }
 
 // Login user
@@ -247,7 +253,8 @@ async function paginateAll<T>(
 // Get all approved submissions (public)
 export async function getApprovedSubmissions(): Promise<ShowcaseSubmission[]> {
   try {
-    const client = getForumClient()
+    const token = await getUserToken()
+    const client = token ? getAuthenticatedForumClient(token) : getForumClient()
 
     const threads = await paginateAll<ThreadData>(async (cursor) => {
       const response = await client.threads.list({ cursor, limit: 50 })
@@ -326,19 +333,23 @@ export async function getMySubmissions(): Promise<ShowcaseSubmission[]> {
 // Get all pending submissions (admin only)
 export async function getPendingSubmissions(): Promise<ShowcaseSubmission[]> {
   const isAdmin = await isUserAdmin()
-  if (!isAdmin) return []
+  const token = await getUserToken()
+  if (!isAdmin || !token) return []
 
   try {
-    const client = getForumClient()
+    const client = getAuthenticatedForumClient(token)
     const submissions: ShowcaseSubmission[] = []
 
     const reports = await paginateAll<ReportData>(async (cursor) => {
-      const response = await client.reports.list({ cursor, status: "pending", limit: 50 })
+      const response = await client.reports.list({ cursor, limit: 50 })
       return {
         items: response.data.items as ReportData[],
         nextCursor: response.data.nextCursor,
       }
     })
+
+    console.log("reports", reports);
+
 
     for (const report of reports) {
       if (report.type === "showcase_submission" && report.threadId) {
@@ -377,12 +388,13 @@ export async function getPendingSubmissions(): Promise<ShowcaseSubmission[]> {
 // Approve a submission (admin only)
 export async function approveSubmission(threadId: string, reportId: string) {
   const isAdmin = await isUserAdmin()
-  if (!isAdmin) {
+  const token = await getUserToken()
+  if (!isAdmin || !token) {
     return { success: false, error: "Not authorized" }
   }
 
   try {
-    const client = getForumClient()
+    const client = getAuthenticatedForumClient(token)
 
     // Get current thread data to preserve other fields
     const threadResponse = await client.threads.retrieve({ id: threadId })
@@ -410,12 +422,13 @@ export async function approveSubmission(threadId: string, reportId: string) {
 // Reject a submission (admin only)
 export async function rejectSubmission(threadId: string, reportId: string) {
   const isAdmin = await isUserAdmin()
-  if (!isAdmin) {
+  const token = await getUserToken()
+  if (!isAdmin || !token) {
     return { success: false, error: "Not authorized" }
   }
 
   try {
-    const client = getForumClient()
+    const client = getAuthenticatedForumClient(token)
 
     // Get current thread data to preserve other fields
     const threadResponse = await client.threads.retrieve({ id: threadId })
