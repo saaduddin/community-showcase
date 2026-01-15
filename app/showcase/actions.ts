@@ -2,8 +2,56 @@
 
 import { ForumClient } from "@foru-ms/sdk"
 import { cookies } from "next/headers"
+import { unstable_cache, revalidatePath } from "next/cache"
+import { z } from "zod"
 
+// ============================================================================
+// Validation Schemas
+// ============================================================================
+
+const loginSchema = z.object({
+  login: z.string().min(1, "Login is required"),
+  password: z.string().min(1, "Password is required"),
+})
+
+const registerSchema = z.object({
+  username: z.string().min(3, "Username must be at least 3 characters").max(30),
+  email: z.string().email("Invalid email address"),
+  password: z.string().min(8, "Password must be at least 8 characters"),
+  displayName: z.string().max(50).optional(),
+})
+
+const createSubmissionSchema = z.object({
+  title: z.string().min(1, "Title is required").max(200),
+  description: z.string().min(10, "Description must be at least 10 characters").max(5000),
+  images: z.array(z.object({
+    url: z.string().url("Invalid image URL"),
+    name: z.string(),
+  })).min(1, "At least one image is required").max(10),
+  mainImageIndex: z.number().int().min(0),
+  projectUrl: z.string().url("Invalid project URL").optional().or(z.literal("")),
+})
+
+const idSchema = z.string().min(1, "ID is required")
+
+// ============================================================================
+// Structured Error Types
+// ============================================================================
+
+type ActionError =
+  | { code: "UNAUTHORIZED"; message: string }
+  | { code: "VALIDATION_ERROR"; message: string; details?: z.ZodIssue[] }
+  | { code: "NOT_FOUND"; message: string }
+  | { code: "RATE_LIMITED"; message: string; retryAfter?: number }
+  | { code: "INTERNAL_ERROR"; message: string }
+
+type ActionResult<T = void> =
+  | { success: true; data?: T }
+  | { success: false; error: ActionError }
+
+// ============================================================================
 // Type definitions for v2 SDK thread data shape
+// ============================================================================
 interface ThreadData {
   id: string
   title: string
@@ -113,15 +161,51 @@ export async function getCurrentUser(): Promise<UserData | null> {
   }
 }
 
+// Get auth context with token, user, and client in one call
+// Eliminates redundant auth.me() calls across multiple functions
+interface AuthContext {
+  token: string
+  user: UserData
+  client: ForumClient
+  isAdmin: boolean
+}
+
+async function getAuthContext(): Promise<AuthContext | null> {
+  const token = await getUserToken()
+  if (!token) return null
+
+  try {
+    const client = getAuthenticatedForumClient(token)
+    const response = await client.auth.me()
+    const user = response.data as UserData
+    const isAdmin = user.roles?.some(r => r.slug === "admin" || r.name === "admin") || false
+    return { token, user, client, isAdmin }
+  } catch {
+    return null
+  }
+}
+
 // Check if user is admin
 export async function isUserAdmin(): Promise<boolean> {
-  const user = await getCurrentUser()
-  if (!user) return false
-  return user.roles?.some(r => r.slug === "admin" || r.name === "admin") || false
+  const ctx = await getAuthContext()
+  return ctx?.isAdmin || false
 }
 
 // Login user
-export async function loginUser(login: string, password: string) {
+export async function loginUser(login: string, password: string): Promise<ActionResult> {
+  // Validate input
+  const validation = loginSchema.safeParse({ login, password })
+  if (!validation.success) {
+    return {
+      success: false,
+      error: {
+        code: "VALIDATION_ERROR",
+        message: validation.error.errors[0]?.message || "Invalid input",
+        details: validation.error.errors,
+      },
+    }
+  }
+
   try {
     const client = getForumClient()
     const response = await client.auth.login({ login, password })
@@ -135,9 +219,19 @@ export async function loginUser(login: string, password: string) {
     })
 
     return { success: true }
-  } catch (error: any) {
-    console.error("[loginUser] Failed:", JSON.stringify(error, null, 2))
-    return { success: false, error: "Invalid credentials" }
+  } catch (error: unknown) {
+    console.error("[loginUser] Failed:", error)
+    // Check for rate limiting
+    if (error && typeof error === "object" && "statusCode" in error && error.statusCode === 429) {
+      return {
+        success: false,
+        error: { code: "RATE_LIMITED", message: "Too many login attempts. Please try again later." },
+      }
+    }
+    return {
+      success: false,
+      error: { code: "UNAUTHORIZED", message: "Invalid credentials" },
+    }
   }
 }
 
@@ -154,7 +248,20 @@ export async function registerUser(data: {
   email: string
   password: string
   displayName?: string
-}) {
+}): Promise<ActionResult> {
+  // Validate input
+  const validation = registerSchema.safeParse(data)
+  if (!validation.success) {
+    return {
+      success: false,
+      error: {
+        code: "VALIDATION_ERROR",
+        message: validation.error.errors[0]?.message || "Invalid input",
+        details: validation.error.errors,
+      },
+    }
+  }
+
   try {
     const client = getForumClient()
     const response = await client.auth.register({
@@ -173,9 +280,18 @@ export async function registerUser(data: {
     })
 
     return { success: true }
-  } catch (error) {
+  } catch (error: unknown) {
     console.error("Registration failed:", error)
-    return { success: false, error: "Registration failed. Username or email may already exist." }
+    if (error && typeof error === "object" && "statusCode" in error && error.statusCode === 429) {
+      return {
+        success: false,
+        error: { code: "RATE_LIMITED", message: "Too many registration attempts. Please try again later." },
+      }
+    }
+    return {
+      success: false,
+      error: { code: "INTERNAL_ERROR", message: "Registration failed. Username or email may already exist." },
+    }
   }
 }
 
@@ -186,19 +302,31 @@ export async function createSubmission(data: {
   images: ImageUpload[]
   mainImageIndex: number
   projectUrl?: string
-}) {
-  const token = await getUserToken()
-  if (!token) {
-    return { success: false, error: "Not authenticated" }
+}): Promise<ActionResult<{ threadId: string }>> {
+  // Validate input
+  const validation = createSubmissionSchema.safeParse(data)
+  if (!validation.success) {
+    return {
+      success: false,
+      error: {
+        code: "VALIDATION_ERROR",
+        message: validation.error.errors[0]?.message || "Invalid input",
+        details: validation.error.errors,
+      },
+    }
+  }
+
+  const ctx = await getAuthContext()
+  if (!ctx) {
+    return {
+      success: false,
+      error: { code: "UNAUTHORIZED", message: "Not authenticated" },
+    }
   }
 
   try {
-    const client = getAuthenticatedForumClient(token)
-    const userResponse = await client.auth.me()
-    const user = userResponse.data as UserData
-
     // Create thread with extendedData
-    const threadResponse = await client.threads.create({
+    const threadResponse = await ctx.client.threads.create({
       title: data.title,
       body: data.description,
       extendedData: {
@@ -207,7 +335,7 @@ export async function createSubmission(data: {
         mainImageIndex: data.mainImageIndex,
         projectUrl: data.projectUrl || "",
         status: "pending" as SubmissionStatus,
-        authorName: user.displayName || user.username,
+        authorName: ctx.user.displayName || ctx.user.username,
         upvotes: 0,
       },
     })
@@ -217,19 +345,30 @@ export async function createSubmission(data: {
       throw new Error("Failed to create thread")
     }
 
-    // Create a report for admin review (userId = reporter)
-    // Use the authenticated client so the report is created by the user
-    await client.reports.create({
+    // Create a report for admin review
+    await ctx.client.reports.create({
       threadId: thread.id,
       type: "showcase_submission",
       status: "pending",
       description: `New showcase submission: ${data.title}`,
     })
 
-    return { success: true, threadId: thread.id }
-  } catch (error) {
+    // Invalidate submissions cache
+    revalidatePath("/showcase")
+
+    return { success: true, data: { threadId: thread.id } }
+  } catch (error: unknown) {
     console.error("Failed to create submission:", error)
-    return { success: false, error: "Failed to create submission" }
+    if (error && typeof error === "object" && "statusCode" in error && error.statusCode === 429) {
+      return {
+        success: false,
+        error: { code: "RATE_LIMITED", message: "Too many requests. Please try again later." },
+      }
+    }
+    return {
+      success: false,
+      error: { code: "INTERNAL_ERROR", message: "Failed to create submission" },
+    }
   }
 }
 
@@ -249,11 +388,10 @@ async function paginateAll<T>(
   return allItems
 }
 
-// Get all approved submissions (public)
-export async function getApprovedSubmissions(): Promise<ShowcaseSubmission[]> {
+// Internal function to fetch approved submissions (used for caching)
+async function fetchApprovedSubmissionsInternal(): Promise<ShowcaseSubmission[]> {
   try {
-    const token = await getUserToken()
-    const client = token ? getAuthenticatedForumClient(token) : getForumClient()
+    const client = getForumClient()
 
     const threads = await paginateAll<ThreadData>(async (cursor) => {
       const response = await client.threads.list({ cursor, limit: 50 })
@@ -280,7 +418,6 @@ export async function getApprovedSubmissions(): Promise<ShowcaseSubmission[]> {
         authorName: (thread.extendedData?.authorName as string) || "Anonymous",
         status: thread.extendedData?.status as SubmissionStatus,
         createdAt: thread.createdAt || new Date().toISOString(),
-
         upvotes: thread._count?.reactions || 0,
       }))
   } catch (error) {
@@ -289,18 +426,26 @@ export async function getApprovedSubmissions(): Promise<ShowcaseSubmission[]> {
   }
 }
 
+// Cached version of approved submissions (60 second TTL)
+const getCachedApprovedSubmissions = unstable_cache(
+  fetchApprovedSubmissionsInternal,
+  ["approved-submissions"],
+  { revalidate: 60, tags: ["submissions"] }
+)
+
+// Get all approved submissions (public) - uses caching
+export async function getApprovedSubmissions(): Promise<ShowcaseSubmission[]> {
+  return getCachedApprovedSubmissions()
+}
+
 // Get user's own submissions
 export async function getMySubmissions(): Promise<ShowcaseSubmission[]> {
-  const token = await getUserToken()
-  if (!token) return []
+  const ctx = await getAuthContext()
+  if (!ctx) return []
 
   try {
-    const client = getAuthenticatedForumClient(token)
-    const userResponse = await client.auth.me()
-    const user = userResponse.data as UserData
-
     const threads = await paginateAll<ThreadData>(async (cursor) => {
-      const response = await client.threads.list({ cursor, limit: 50, userId: user.id })
+      const response = await ctx.client.threads.list({ cursor, limit: 50, userId: ctx.user.id })
       return {
         items: response.data.items as ThreadData[],
         nextCursor: response.data.nextCursor,
@@ -320,7 +465,6 @@ export async function getMySubmissions(): Promise<ShowcaseSubmission[]> {
         authorName: (thread.extendedData?.authorName as string) || "Anonymous",
         status: (thread.extendedData?.status as SubmissionStatus) || "pending",
         createdAt: thread.createdAt || new Date().toISOString(),
-
         upvotes: thread._count?.reactions || 0,
       }))
   } catch (error) {
@@ -330,51 +474,54 @@ export async function getMySubmissions(): Promise<ShowcaseSubmission[]> {
 }
 
 // Get all pending submissions (admin only)
+// Optimized: Uses Promise.all for batch fetching instead of sequential N+1 queries
 export async function getPendingSubmissions(): Promise<ShowcaseSubmission[]> {
-  const isAdmin = await isUserAdmin()
-  const token = await getUserToken()
-  if (!isAdmin || !token) return []
+  const ctx = await getAuthContext()
+  if (!ctx?.isAdmin) return []
 
   try {
-    const client = getAuthenticatedForumClient(token)
-    const submissions: ShowcaseSubmission[] = []
-
     const reports = await paginateAll<ReportData>(async (cursor) => {
-      const response = await client.reports.list({ cursor, status: "pending", limit: 50 })
+      const response = await ctx.client.reports.list({ cursor, status: "pending", limit: 50 })
       return {
         items: response.data.items as ReportData[],
         nextCursor: response.data.nextCursor,
       }
     })
 
-    for (const report of reports) {
-      if (report.type === "showcase_submission" && report.threadId) {
-        try {
-          const threadResponse = await client.threads.retrieve({ id: report.threadId })
-          const thread = threadResponse.data as ThreadData | undefined
-          if (thread?.extendedData?.type === "showcase_submission") {
-            submissions.push({
-              id: thread.id,
-              title: thread.title,
-              description: thread.body || "",
-              images: (thread.extendedData.images as ImageUpload[]) || [],
-              mainImageIndex: (thread.extendedData.mainImageIndex as number) || 0,
-              projectUrl: thread.extendedData.projectUrl as string | undefined,
-              authorId: thread.userId || "",
-              authorName: (thread.extendedData.authorName as string) || "Anonymous",
-              status: "pending",
-              reportId: report.id,
-              createdAt: thread.createdAt || new Date().toISOString(),
-              upvotes: thread._count?.reactions || 0,
-            })
-          }
-        } catch {
-          // Thread might have been deleted
-        }
-      }
-    }
+    // Filter showcase submission reports and extract thread IDs
+    const showcaseReports = reports.filter(
+      (r) => r.type === "showcase_submission" && r.threadId
+    )
 
-    return submissions
+    // Batch fetch all threads in parallel (fixes N+1 query problem)
+    const threadPromises = showcaseReports.map((report) =>
+      ctx.client.threads
+        .retrieve({ id: report.threadId! })
+        .then((res) => ({ report, thread: res.data as ThreadData | undefined }))
+        .catch(() => ({ report, thread: undefined })) // Handle deleted threads
+    )
+
+    const results = await Promise.all(threadPromises)
+
+    return results
+      .filter(
+        ({ thread }) =>
+          thread?.extendedData?.type === "showcase_submission"
+      )
+      .map(({ report, thread }) => ({
+        id: thread!.id,
+        title: thread!.title,
+        description: thread!.body || "",
+        images: (thread!.extendedData!.images as ImageUpload[]) || [],
+        mainImageIndex: (thread!.extendedData!.mainImageIndex as number) || 0,
+        projectUrl: thread!.extendedData!.projectUrl as string | undefined,
+        authorId: thread!.userId || "",
+        authorName: (thread!.extendedData!.authorName as string) || "Anonymous",
+        status: "pending" as SubmissionStatus,
+        reportId: report.id,
+        createdAt: thread!.createdAt || new Date().toISOString(),
+        upvotes: thread!._count?.reactions || 0,
+      }))
   } catch (error) {
     console.error("Failed to fetch pending submissions:", error)
     return []
@@ -382,22 +529,32 @@ export async function getPendingSubmissions(): Promise<ShowcaseSubmission[]> {
 }
 
 // Approve a submission (admin only)
-export async function approveSubmission(threadId: string, reportId: string) {
-  const isAdmin = await isUserAdmin()
-  const token = await getUserToken()
-  if (!isAdmin || !token) {
-    return { success: false, error: "Not authorized" }
+export async function approveSubmission(threadId: string, reportId: string): Promise<ActionResult> {
+  // Validate inputs
+  const threadValidation = idSchema.safeParse(threadId)
+  const reportValidation = idSchema.safeParse(reportId)
+  if (!threadValidation.success || !reportValidation.success) {
+    return {
+      success: false,
+      error: { code: "VALIDATION_ERROR", message: "Invalid thread or report ID" },
+    }
+  }
+
+  const ctx = await getAuthContext()
+  if (!ctx?.isAdmin) {
+    return {
+      success: false,
+      error: { code: "UNAUTHORIZED", message: "Not authorized" },
+    }
   }
 
   try {
-    const client = getAuthenticatedForumClient(token)
-
     // Get current thread data to preserve other fields
-    const threadResponse = await client.threads.retrieve({ id: threadId })
+    const threadResponse = await ctx.client.threads.retrieve({ id: threadId })
     const currentExtendedData = threadResponse.data?.extendedData || {}
 
     // Update thread status to approved
-    await client.threads.update({
+    await ctx.client.threads.update({
       id: threadId,
       extendedData: {
         ...currentExtendedData,
@@ -406,32 +563,54 @@ export async function approveSubmission(threadId: string, reportId: string) {
     })
 
     // Update report status
-    await client.reports.update({ id: reportId, status: "approved" })
+    await ctx.client.reports.update({ id: reportId, status: "approved" })
+
+    // Invalidate cache
+    revalidatePath("/showcase")
 
     return { success: true }
-  } catch (error) {
+  } catch (error: unknown) {
     console.error("Failed to approve submission:", error)
-    return { success: false, error: "Failed to approve submission" }
+    if (error && typeof error === "object" && "statusCode" in error && error.statusCode === 404) {
+      return {
+        success: false,
+        error: { code: "NOT_FOUND", message: "Submission not found" },
+      }
+    }
+    return {
+      success: false,
+      error: { code: "INTERNAL_ERROR", message: "Failed to approve submission" },
+    }
   }
 }
 
 // Reject a submission (admin only)
-export async function rejectSubmission(threadId: string, reportId: string) {
-  const isAdmin = await isUserAdmin()
-  const token = await getUserToken()
-  if (!isAdmin || !token) {
-    return { success: false, error: "Not authorized" }
+export async function rejectSubmission(threadId: string, reportId: string): Promise<ActionResult> {
+  // Validate inputs
+  const threadValidation = idSchema.safeParse(threadId)
+  const reportValidation = idSchema.safeParse(reportId)
+  if (!threadValidation.success || !reportValidation.success) {
+    return {
+      success: false,
+      error: { code: "VALIDATION_ERROR", message: "Invalid thread or report ID" },
+    }
+  }
+
+  const ctx = await getAuthContext()
+  if (!ctx?.isAdmin) {
+    return {
+      success: false,
+      error: { code: "UNAUTHORIZED", message: "Not authorized" },
+    }
   }
 
   try {
-    const client = getAuthenticatedForumClient(token)
-
     // Get current thread data to preserve other fields
-    const threadResponse = await client.threads.retrieve({ id: threadId })
+    const threadResponse = await ctx.client.threads.retrieve({ id: threadId })
     const currentExtendedData = threadResponse.data?.extendedData || {}
 
     // Update thread status to rejected
-    await client.threads.update({
+    await ctx.client.threads.update({
       id: threadId,
       extendedData: {
         ...currentExtendedData,
@@ -440,49 +619,85 @@ export async function rejectSubmission(threadId: string, reportId: string) {
     })
 
     // Update report status
-    await client.reports.update({ id: reportId, status: "rejected" })
+    await ctx.client.reports.update({ id: reportId, status: "rejected" })
+
+    // Invalidate cache
+    revalidatePath("/showcase")
 
     return { success: true }
-  } catch (error) {
+  } catch (error: unknown) {
     console.error("Failed to reject submission:", error)
-    return { success: false, error: "Failed to reject submission" }
+    if (error && typeof error === "object" && "statusCode" in error && error.statusCode === 404) {
+      return {
+        success: false,
+        error: { code: "NOT_FOUND", message: "Submission not found" },
+      }
+    }
+    return {
+      success: false,
+      error: { code: "INTERNAL_ERROR", message: "Failed to reject submission" },
+    }
   }
 }
 
 // Toggle upvote (using native reactions)
-export async function toggleUpvote(threadId: string) {
-  const token = await getUserToken()
-  if (!token) return { success: false, error: "Not authenticated" }
+export async function toggleUpvote(threadId: string): Promise<ActionResult<{ action: "liked" | "unliked" }>> {
+  // Validate input
+  const validation = idSchema.safeParse(threadId)
+  if (!validation.success) {
+    return {
+      success: false,
+      error: { code: "VALIDATION_ERROR", message: "Invalid thread ID" },
+    }
+  }
+
+  const ctx = await getAuthContext()
+  if (!ctx) {
+    return {
+      success: false,
+      error: { code: "UNAUTHORIZED", message: "Not authenticated" },
+    }
+  }
 
   try {
-    const client = getAuthenticatedForumClient(token)
-    const userResponse = await client.auth.me()
-    const user = userResponse.data as UserData
-
     // Check if user already liked the thread
-    // List reactions and check if any belong to the current user (filter client-side)
-    const reactionsResponse = await client.threads.listReactions({ id: threadId })
+    const reactionsResponse = await ctx.client.threads.listReactions({ id: threadId })
     const reactions = reactionsResponse.data.items
 
-    const existingLike = reactions.find(r => r.userId === user.id && r.type === "LIKE")
+    const existingLike = reactions.find(r => r.userId === ctx.user.id && r.type === "LIKE")
 
     if (existingLike) {
-      // Unlike: Delete the reaction using its ID
-      await client.threads.deleteReaction({
+      // Unlike: Delete the reaction
+      await ctx.client.threads.deleteReaction({
         id: threadId,
         subId: existingLike.id
       })
-      return { success: true, action: "unliked" }
+      return { success: true, data: { action: "unliked" } }
     } else {
       // Like: Create a new reaction
-      await client.threads.createReaction({
+      await ctx.client.threads.createReaction({
         id: threadId,
         type: "LIKE"
       })
-      return { success: true, action: "liked" }
+      return { success: true, data: { action: "liked" } }
     }
-  } catch (error) {
+  } catch (error: unknown) {
     console.error("Failed to vote:", error)
-    return { success: false, error: "Failed to vote" }
+    if (error && typeof error === "object" && "statusCode" in error && error.statusCode === 404) {
+      return {
+        success: false,
+        error: { code: "NOT_FOUND", message: "Thread not found" },
+      }
+    }
+    if (error && typeof error === "object" && "statusCode" in error && error.statusCode === 429) {
+      return {
+        success: false,
+        error: { code: "RATE_LIMITED", message: "Too many requests. Please try again later." },
+      }
+    }
+    return {
+      success: false,
+      error: { code: "INTERNAL_ERROR", message: "Failed to vote" },
+    }
   }
 }

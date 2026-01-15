@@ -48,7 +48,7 @@ export function SubmissionForm({ onSuccess }: SubmissionFormProps) {
         ; (e.target as HTMLFormElement).reset()
       onSuccess?.()
     } else {
-      setError(result.error || "Something went wrong")
+      setError(result.error?.message || "Something went wrong")
     }
   }
 

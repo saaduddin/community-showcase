@@ -42,7 +42,7 @@ export function AuthModal({ children }: AuthModalProps) {
       setOpen(false)
       window.location.reload()
     } else {
-      setError(result.error || "Sign in failed")
+      setError(result.error?.message || "Sign in failed")
     }
   }
 
@@ -74,7 +74,7 @@ export function AuthModal({ children }: AuthModalProps) {
       setOpen(false)
       window.location.reload()
     } else {
-      setError(result.error || "Registration failed")
+      setError(result.error?.message || "Registration failed")
     }
   }
 

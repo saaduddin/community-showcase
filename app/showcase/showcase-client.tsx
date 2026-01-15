@@ -13,7 +13,12 @@ import { logoutUser } from "./actions"
 import { LayoutGrid, PlusCircle, Shield, FolderOpen, LogOut, Sparkles, LogIn } from "lucide-react"
 
 interface ShowcaseClientProps {
-  user: { id: string; username: string; displayName?: string | null; roles?: string[] } | null
+  user: {
+    id: string
+    username: string
+    displayName?: string | null
+    roles?: { id: string; name: string; slug: string }[]
+  } | null
   isAdmin: boolean
 }
 
