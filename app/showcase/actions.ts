@@ -221,9 +221,8 @@ export async function createSubmission(data: {
     // Use the authenticated client so the report is created by the user
     await client.reports.create({
       threadId: thread.id,
-      userId: user.id,
-      reportedId: user.id,
       type: "showcase_submission",
+      status: "pending",
       description: `New showcase submission: ${data.title}`,
     })
 
@@ -341,15 +340,12 @@ export async function getPendingSubmissions(): Promise<ShowcaseSubmission[]> {
     const submissions: ShowcaseSubmission[] = []
 
     const reports = await paginateAll<ReportData>(async (cursor) => {
-      const response = await client.reports.list({ cursor, limit: 50 })
+      const response = await client.reports.list({ cursor, status: "pending", limit: 50 })
       return {
         items: response.data.items as ReportData[],
         nextCursor: response.data.nextCursor,
       }
     })
-
-    console.log("reports", reports);
-
 
     for (const report of reports) {
       if (report.type === "showcase_submission" && report.threadId) {
